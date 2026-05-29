@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Controle de Folgas</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body style="margin:0;padding:0;">
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect} = React;
+
+const sb = supabase.createClient(
+  'https://yebeigsggeburnoqthuy.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InllYmVpZ3NnZ2VidXJub3F0aHV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAwMDYxMTMsImV4cCI6MjA5NTU4MjExM30.W8fezcnrMo4lMFaM5VPt0Hh2zclr6Wwg2MOvbkuCPhA'
+);
+
+async function fetchAllData() {
+  const [sv,sa,re,so,cfg] = await Promise.all([
+    sb.from('servidores').select('*').order('matricula'),
+    sb.from('saldos').select('*').order('criado_em'),
+    sb.from('remocoes').select('*').order('criado_em'),
+    sb.from('solicitacoes').select('*').order('criado_em',{ascending:false}),
+    sb.from('config').select('*').limit(1).single(),
+  ]);
+  return {
+    adminSenha: cfg.data?.admin_senha || 'admin123',
+    servidores: (sv.data||[]).map(x=>({id:x.id,matricula:x.matricula,nome:x.nome,cargo:x.cargo,senha:x.senha})),
+    saldos: (sa.data||[]).map(x=>({id:x.id,servidorId:x.servidor_id,dias:Number(x.dias),obs:x.obs,criadoEm:x.criado_em})),
+    remocoes: (re.data||[]).map(x=>({id:x.id,servidorId:x.servidor_id,dias:Number(x.dias),motivo:x.motivo,criadoEm:x.criado_em})),
+    solicitacoes: (so.data||[]).map(x=>({id:x.id,servidorId:x.servidor_id,servidorNome:x.servidor_nome,dataInicio:x.data_inicio,dataFim:x.data_fim,motivo:x.motivo,status:x.status,criadoEm:x.criado_em})),
+  };
+}
+
+function calcSaldo(data,sid) {
+  const gerado   = data.saldos.filter(s=>s.servidorId===sid).reduce((a,s)=>a+s.dias,0);
+  const removido = data.remocoes.filter(r=>r.servidorId===sid).reduce((a,r)=>a+r.dias,0);
+  const usado    = data.solicitacoes.filter(s=>s.servidorId===sid&&s.status==='aprovado').reduce((a,s)=>a+Math.round((new Date(s.dataFim)-new Date(s.dataInicio))/86400000)+1,0);
+  return {gerado,removido,usado,saldo:gerado-removido-usado};
+}
+
+function fmtDate(str) {
+  if(!str) return '';
+  const [y,m,d]=str.split('-');
+  return `${d}/${m}/${y}`;
+}
+function fmtDT(iso) {
+  if(!iso) return '';
+  return new Date(iso).toLocaleDateString('pt-BR');
+}
+
+const SC={
+  pendente:{bg:'#FFF8E1',text:'#F59E0B',border:'#FDE68A'},
+  aprovado:{bg:'#ECFDF5',text:'#059669',border:'#A7F3D0'},
+  negado:{bg:'#FEF2F2',text:'#DC2626',border:'#FECACA'},
+};
+const SL={pendente:'Pendente',aprovado:'Aprovado',negado:'Negado'};
+
+const S={
+  root:{minHeight:'100vh',background:'#F1F5F9',fontFamily:"'Segoe UI',system-ui,sans-serif",color:'#1E293B'},
+  wrap:{maxWidth:600,margin:'0 auto',minHeight:'100vh',background:'#fff',boxShadow:'0 0 40px rgba(0,0,0,0.07)'},
+  header:{background:'#1E3A5F',color:'#fff',padding:'20px 24px',display:'flex',alignItems:'center',justifyContent:'space-between'},
+  hTitle:{fontWeight:700,fontSize:17},
+  hSub:{fontSize:12,opacity:0.7,marginTop:2},
+  logoutBtn:{background:'rgba(255,255,255,0.15)',border:'none',color:'#fff',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontSize:13,fontWeight:600},
+  tabs:{display:'flex',borderBottom:'1px solid #E2E8F0',background:'#F8FAFC',overflowX:'auto'},
+  tab:{flex:1,padding:'11px 3px',border:'none',background:'none',cursor:'pointer',fontSize:11,fontWeight:500,color:'#64748B',borderBottom:'2px solid transparent',display:'flex',alignItems:'center',justifyContent:'center',gap:3,whiteSpace:'nowrap',minWidth:50},
+  tabOn:{color:'#1E3A5F',borderBottomColor:'#1E3A5F',fontWeight:700,background:'#fff'},
+  badge:{background:'#EF4444',color:'#fff',borderRadius:99,fontSize:10,fontWeight:700,padding:'1px 5px'},
+  content:{padding:20},
+  secTitle:{fontSize:15,fontWeight:700,color:'#1E293B',margin:'0 0 14px'},
+  row:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12},
+  list:{display:'flex',flexDirection:'column',gap:10},
+  card:{background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:14,padding:'16px 18px'},
+  item:{display:'flex',alignItems:'center',justifyContent:'space-between',background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:12,padding:'14px 16px',gap:8},
+  solCard:{background:'#F8FAFC',border:'1.5px solid',borderRadius:12,padding:'14px 16px',display:'flex',flexDirection:'column',gap:6},
+  iTitle:{fontWeight:600,fontSize:14,color:'#1E293B'},
+  iSub:{fontSize:12,color:'#64748B',marginTop:2},
+  sNome:{fontWeight:700,fontSize:15,color:'#1E293B'},
+  sCargo:{fontSize:12,color:'#64748B',marginBottom:8},
+  sNums:{display:'flex',gap:6},
+  sItem:{flex:1,textAlign:'center'},
+  sVal:{display:'block',fontSize:19,fontWeight:700},
+  sLbl:{fontSize:10,color:'#94A3B8'},
+  matTag:{fontSize:11,fontWeight:700,color:'#6366F1',background:'#EEF2FF',borderRadius:6,padding:'2px 8px'},
+  stBadge:{fontSize:11,fontWeight:700,borderRadius:99,padding:'3px 10px'},
+  empty:{color:'#94A3B8',fontSize:13,textAlign:'center',padding:'20px 0'},
+  loginWrap:{display:'flex',alignItems:'center',justifyContent:'center',minHeight:'100vh',padding:16},
+  loginCard:{background:'#fff',borderRadius:20,padding:'36px 28px',width:'100%',maxWidth:380,boxShadow:'0 8px 32px rgba(0,0,0,0.10)',display:'flex',flexDirection:'column',gap:14},
+  optBtn:{display:'flex',alignItems:'center',gap:14,padding:'16px 18px',borderRadius:12,border:'1.5px solid #E2E8F0',background:'#F8FAFC',cursor:'pointer',textAlign:'left'},
+  backBtn:{background:'none',border:'none',color:'#64748B',cursor:'pointer',fontSize:14,padding:0},
+  input:{width:'100%',padding:'10px 14px',borderRadius:10,border:'1.5px solid #E2E8F0',fontSize:14,outline:'none',boxSizing:'border-box',background:'#F8FAFC',color:'#1E293B'},
+  inputErr:{borderColor:'#EF4444',background:'#FEF2F2'},
+  label:{fontSize:12,fontWeight:600,color:'#64748B',marginBottom:2},
+  btnPrimary:{width:'100%',padding:'12px',background:'#1E3A5F',color:'#fff',border:'none',borderRadius:10,fontWeight:600,fontSize:15,cursor:'pointer'},
+  btnSec:{padding:'10px 18px',background:'#F1F5F9',color:'#475569',border:'none',borderRadius:10,fontWeight:600,fontSize:14,cursor:'pointer'},
+  btnSm:{padding:'7px 12px',background:'#1E3A5F',color:'#fff',border:'none',borderRadius:8,fontWeight:600,fontSize:12,cursor:'pointer'},
+  btnGreen:{padding:'7px 12px',background:'#059669',color:'#fff',border:'none',borderRadius:8,fontWeight:600,fontSize:12,cursor:'pointer'},
+  btnEdit:{padding:'6px 10px',background:'#EFF6FF',color:'#3B82F6',border:'1px solid #BFDBFE',borderRadius:8,fontWeight:600,fontSize:11,cursor:'pointer'},
+  btnDel:{padding:'6px 10px',background:'#FEF2F2',color:'#DC2626',border:'1px solid #FECACA',borderRadius:8,fontWeight:600,fontSize:11,cursor:'pointer'},
+  btnOk:{padding:'7px 14px',background:'#ECFDF5',color:'#059669',border:'1px solid #A7F3D0',borderRadius:8,fontWeight:600,fontSize:13,cursor:'pointer'},
+  btnNo:{padding:'7px 14px',background:'#FEF2F2',color:'#DC2626',border:'1px solid #FECACA',borderRadius:8,fontWeight:600,fontSize:13,cursor:'pointer'},
+  overlay:{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:100,padding:16},
+  modalBox:{background:'#fff',borderRadius:20,padding:'24px 20px',width:'100%',maxWidth:480,display:'flex',flexDirection:'column',gap:10,boxShadow:'0 8px 40px rgba(0,0,0,0.2)',maxHeight:'90vh',overflowY:'auto'},
+  modalTitle:{fontSize:17,fontWeight:700,color:'#1E293B',margin:'0 0 4px'},
+  perfilCard:{display:'flex',alignItems:'center',gap:16,background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:14,padding:'18px 20px',marginBottom:16},
+  avatar:{width:52,height:52,borderRadius:'50%',background:'#1E3A5F',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,fontWeight:700,flexShrink:0},
+  senhaBox:{background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:14,padding:'20px 18px',display:'flex',flexDirection:'column',gap:6},
+  checkbox:{width:18,height:18,cursor:'pointer',accentColor:'#1E3A5F',flexShrink:0},
+  spinner:{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:'100vh',background:'#F1F5F9',gap:16},
+  busyOverlay:{position:'fixed',inset:0,background:'rgba(0,0,0,0.3)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:200},
+  busyBox:{background:'#fff',borderRadius:12,padding:'20px 32px',fontSize:15,fontWeight:600,color:'#1E293B'},
+};
+
+function Modal({title,children}) {
+  return (
+    <div style={S.overlay}>
+      <div style={S.modalBox}>
+        <h3 style={S.modalTitle}>{title}</h3>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SenhaForm({senhaAtual,onSave}) {
+  const [f,setF]=useState({atual:'',nova:'',confirma:''});
+  const [erro,setErro]=useState('');
+  const [ok,setOk]=useState(false);
+  const [busy,setBusy]=useState(false);
+  async function salvar() {
+    setErro('');setOk(false);
+    if(f.atual!==senhaAtual){setErro('Senha atual incorreta.');return;}
+    if(f.nova.length<3){setErro('Mínimo 3 caracteres.');return;}
+    if(f.nova!==f.confirma){setErro('Senhas não coincidem.');return;}
+    setBusy(true);
+    try{await onSave(f.nova);setF({atual:'',nova:'',confirma:''});setOk(true);}
+    catch{setErro('Erro ao salvar.');}
+    finally{setBusy(false);}
+  }
+  return (
+    <div style={S.senhaBox}>
+      <h3 style={{...S.secTitle,marginBottom:12}}>🔑 Alterar Senha</h3>
+      <label style={S.label}>Senha atual</label>
+      <input style={S.input} type="password" value={f.atual} onChange={e=>{setF(v=>({...v,atual:e.target.value}));setErro('');setOk(false);}}/>
+      <label style={{...S.label,marginTop:8}}>Nova senha</label>
+      <input style={S.input} type="password" value={f.nova} onChange={e=>{setF(v=>({...v,nova:e.target.value}));setErro('');setOk(false);}}/>
+      <label style={{...S.label,marginTop:8}}>Confirmar</label>
+      <input style={S.input} type="password" value={f.confirma} onChange={e=>{setF(v=>({...v,confirma:e.target.value}));setErro('');setOk(false);}}/>
+      {erro&&<p style={{color:'#DC2626',fontSize:13,margin:'4px 0 0'}}>⚠ {erro}</p>}
+      {ok&&<p style={{color:'#059669',fontSize:13,margin:'4px 0 0'}}>✓ Senha alterada!</p>}
+      <button style={{...S.btnPrimary,marginTop:10,opacity:busy?0.6:1}} onClick={salvar} disabled={busy}>
+        {busy?'Salvando...':'Salvar nova senha'}
+      </button>
+    </div>
+  );
+}
+
+function ServidorSelector({servidores,selecionados,onChange,data}) {
+  function toggleAll(){
+    if(selecionados.length===servidores.length) onChange([]);
+    else onChange(servidores.map(s=>s.id));
+  }
+  return (
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+        <span style={S.label}>Selecione os servidores</span>
+        <button style={{...S.btnSm,padding:'4px 10px',fontSize:11}} onClick={toggleAll}>
+          {selecionados.length===servidores.length?'Desmarcar todos':'Selecionar todos'}
+        </button>
+      </div>
+      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+        {servidores.map(s=>{
+          const sel=selecionados.includes(s.id);
+          const {saldo}=data?calcSaldo(data,s.id):{saldo:0};
+          return (
+            <div key={s.id}
+              onClick={()=>onChange(sel?selecionados.filter(x=>x!==s.id):[...selecionados,s.id])}
+              style={{display:'flex',alignItems:'center',gap:12,padding:'12px 14px',background:sel?'#EEF2FF':'#F8FAFC',borderRadius:12,border:`2px solid ${sel?'#6366F1':'#E2E8F0'}`,cursor:'pointer'}}
+            >
+              <input type="checkbox" style={S.checkbox} checked={sel} onChange={()=>{}}/>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:600,fontSize:14,color:'#1E293B'}}>{s.nome}</div>
+                <div style={{fontSize:11,color:'#94A3B8'}}>#{s.matricula} · {s.cargo}</div>
+              </div>
+              {data&&<span style={{fontSize:12,fontWeight:700,color:'#10B981'}}>{saldo}d</span>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── ADMIN PANEL ──────────────────────────────────────────────────────────────
+function AdminPanel({data,onRefresh,onLogout}) {
+  const [aba,setAba]=useState('Painel');
+  const [modal,setModal]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const [novoSrv,setNovoSrv]=useState({matricula:'',nome:'',cargo:''});
+  const [editSrv,setEditSrv]=useState(null);
+  const [saldoSel,setSaldoSel]=useState([]);
+  const [saldoDias,setSaldoDias]=useState('');
+  const [saldoObs,setSaldoObs]=useState('');
+  const [indivSrv,setIndivSrv]=useState(null);
+  const [indivDias,setIndivDias]=useState('');
+  const [indivObs,setIndivObs]=useState('');
+  const [remSrv,setRemSrv]=useState(null);
+  const [remDias,setRemDias]=useState('');
+  const [remMotivo,setRemMotivo]=useState('');
+  const [solSel,setSolSel]=useState([]);
+  const [histSrvId,setHistSrvId]=useState('');
+
+  async function save(fn,cleanup) {
+    setBusy(true);
+    try{await fn();await onRefresh();if(cleanup)cleanup();}
+    catch{alert('Erro ao salvar. Verifique a conexão.');}
+    finally{setBusy(false);}
+  }
+
+  function addServidor(){
+    if(!novoSrv.nome.trim()||!novoSrv.matricula.trim()) return;
+    save(()=>sb.from('servidores').insert({matricula:novoSrv.matricula,nome:novoSrv.nome,cargo:novoSrv.cargo,senha:'123'}),
+      ()=>{setNovoSrv({matricula:'',nome:'',cargo:''});setModal(null);});
+  }
+  function saveEdit(){
+    if(!editSrv?.nome.trim()) return;
+    save(()=>sb.from('servidores').update({matricula:editSrv.matricula,nome:editSrv.nome,cargo:editSrv.cargo}).eq('id',editSrv.id),
+      ()=>setModal(null));
+  }
+  function delServidor(id){
+    save(()=>sb.from('servidores').delete().eq('id',id));
+  }
+  function confirmarSaldoMultiplo(){
+    if(!saldoSel.length||!saldoDias||Number(saldoDias)<=0) return;
+    save(()=>sb.from('saldos').insert(saldoSel.map(sid=>({servidor_id:sid,dias:Number(saldoDias),obs:saldoObs||null}))),
+      ()=>{setSaldoSel([]);setSaldoDias('');setSaldoObs('');setModal(null);});
+  }
+  function confirmarSaldoIndiv(){
+    if(!indivSrv||!indivDias||Number(indivDias)<=0) return;
+    save(()=>sb.from('saldos').insert({servidor_id:indivSrv.id,dias:Number(indivDias),obs:indivObs||null}),
+      ()=>{setIndivDias('');setIndivObs('');setModal(null);});
+  }
+  function removerSaldo(){
+    if(!remSrv||!remDias||Number(remDias)<=0) return;
+    save(()=>sb.from('remocoes').insert({servidor_id:remSrv.id,dias:Number(remDias),motivo:remMotivo||null}),
+      ()=>{setRemSrv(null);setRemDias('');setRemMotivo('');setModal(null);});
+  }
+  function resolverUm(id,status){save(()=>sb.from('solicitacoes').update({status}).eq('id',id));}
+  function resolverSelecionados(status){
+    if(!solSel.length) return;
+    save(()=>sb.from('solicitacoes').update({status}).in('id',solSel),()=>setSolSel([]));
+  }
+
+  function buildTimeline(sid){
+    const ev=[];
+    data.saldos.filter(s=>s.servidorId===sid).forEach(s=>ev.push({tipo:'credito',data:s.criadoEm,dias:s.dias,obs:s.obs}));
+    data.remocoes.filter(r=>r.servidorId===sid).forEach(r=>ev.push({tipo:'remocao',data:r.criadoEm,dias:r.dias,obs:r.motivo}));
+    data.solicitacoes.filter(s=>s.servidorId===sid&&s.status==='aprovado').forEach(s=>{
+      const dias=Math.round((new Date(s.dataFim)-new Date(s.dataInicio))/86400000)+1;
+      ev.push({tipo:'folga',data:s.criadoEm,dias,obs:`${fmtDate(s.dataInicio)} → ${fmtDate(s.dataFim)}`});
+    });
+    data.solicitacoes.filter(s=>s.servidorId===sid&&s.status==='pendente').forEach(s=>
+      ev.push({tipo:'pendente',data:s.criadoEm,obs:`${fmtDate(s.dataInicio)} → ${fmtDate(s.dataFim)}`}));
+    return ev.sort((a,b)=>new Date(b.data)-new Date(a.data));
+  }
+
+  const TC={credito:'#10B981',remocao:'#EF4444',folga:'#3B82F6',pendente:'#F59E0B'};
+  const TL={credito:'Saldo creditado',remocao:'Saldo removido',folga:'Folga aprovada',pendente:'Sol. pendente'};
+  const pendentes=data.solicitacoes.filter(s=>s.status==='pendente').length;
+  const ABAS=['Painel','Servidores','Histórico','Saldo','Solicitações','Config'];
+
+  return (
+    <div style={S.root}>
+      {busy&&<div style={S.busyOverlay}><div style={S.busyBox}>Salvando...</div></div>}
+      <div style={S.wrap}>
+        <div style={S.header}>
+          <div><div style={S.hTitle}>Administração</div><div style={S.hSub}>Controle de Folgas</div></div>
+          <button style={S.logoutBtn} onClick={onLogout}>Sair</button>
+        </div>
+        <div style={S.tabs}>
+          {ABAS.map(a=>(
+            <button key={a} style={{...S.tab,...(aba===a?S.tabOn:{})}} onClick={()=>setAba(a)}>
+              {a==='Solicitações'&&pendentes>0?<>{a}<span style={S.badge}>{pendentes}</span></>:a}
+            </button>
+          ))}
+        </div>
+        <div style={S.content}>
+
+          {aba==='Painel'&&(
+            <div>
+              <h3 style={S.secTitle}>Saldo de todos os servidores</h3>
+              <div style={S.list}>
+                {data.servidores.map(s=>{
+                  const {gerado,removido,usado,saldo}=calcSaldo(data,s.id);
+                  return (
+                    <div key={s.id} style={S.card}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+                        <div><div style={S.sNome}>{s.nome}</div><div style={S.sCargo}>{s.cargo}</div></div>
+                        <span style={S.matTag}>#{s.matricula}</span>
+                      </div>
+                      <div style={S.sNums}>
+                        <div style={S.sItem}><span style={{...S.sVal,color:'#3B82F6'}}>{gerado}</span><span style={S.sLbl}>Creditadas</span></div>
+                        <div style={S.sItem}><span style={{...S.sVal,color:'#F59E0B'}}>{removido}</span><span style={S.sLbl}>Removidas</span></div>
+                        <div style={S.sItem}><span style={{...S.sVal,color:'#EF4444'}}>{usado}</span><span style={S.sLbl}>Usadas</span></div>
+                        <div style={S.sItem}><span style={{...S.sVal,color:'#10B981',fontWeight:800}}>{saldo}</span><span style={S.sLbl}>Saldo</span></div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {aba==='Servidores'&&(
+            <div>
+              <div style={S.row}><h3 style={S.secTitle}>Servidores</h3><button style={S.btnSm} onClick={()=>setModal('add')}>+ Adicionar</button></div>
+              <div style={S.list}>
+                {data.servidores.map(s=>{
+                  const {saldo}=calcSaldo(data,s.id);
+                  return (
+                    <div key={s.id} style={{...S.card,padding:'14px 16px'}}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+                        <div>
+                          <div style={{display:'flex',alignItems:'center',gap:8}}>
+                            <div style={S.iTitle}>{s.nome}</div>
+                            <span style={S.matTag}>#{s.matricula}</span>
+                          </div>
+                          <div style={S.iSub}>{s.cargo}</div>
+                        </div>
+                        <div style={{textAlign:'right'}}>
+                          <div style={{fontSize:18,fontWeight:800,color:'#10B981'}}>{saldo}d</div>
+                          <div style={{fontSize:10,color:'#94A3B8'}}>saldo</div>
+                        </div>
+                      </div>
+                      <div style={{display:'flex',gap:6}}>
+                        <button style={S.btnGreen} onClick={()=>{setIndivSrv(s);setModal('addIndiv');}}>+ Saldo</button>
+                        <button style={S.btnEdit} onClick={()=>{setEditSrv({...s});setModal('edit');}}>Editar</button>
+                        <button style={S.btnDel} onClick={()=>delServidor(s.id)}>Remover</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {aba==='Histórico'&&(
+            <div>
+              <h3 style={S.secTitle}>Histórico por servidor</h3>
+              <label style={S.label}>Selecione o servidor</label>
+              <select style={{...S.input,marginBottom:20}} value={histSrvId} onChange={e=>setHistSrvId(e.target.value)}>
+                <option value="">Selecione...</option>
+                {data.servidores.map(s=><option key={s.id} value={s.id}>{s.nome} — #{s.matricula}</option>)}
+              </select>
+              {histSrvId&&(()=>{
+                const sid=Number(histSrvId);
+                const sv=data.servidores.find(s=>s.id===sid);
+                const {gerado,removido,usado,saldo}=calcSaldo(data,sid);
+                const tl=buildTimeline(sid);
+                return (
+                  <div>
+                    <div style={{...S.card,marginBottom:16}}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                        <div style={S.sNome}>{sv.nome}</div>
+                        <span style={S.matTag}>#{sv.matricula}</span>
+                      </div>
+                      <div style={S.sNums}>
+                        <div style={S.sItem}><span style={{...S.sVal,color:'#3B82F6'}}>{gerado}</span><span style={S.sLbl}>Creditadas</span></div>
+                        <div style={S.sItem}><span style={{...S.sVal,color:'#F59E0B'}}>{removido}</span><span style={S.sLbl}>Removidas</span></div>
+                        <div style={S.sItem}><span style={{...S.sVal,color:'#EF4444'}}>{usado}</span><span style={S.sLbl}>Usadas</span></div>
+                        <div style={S.sItem}><span style={{...S.sVal,color:'#10B981',fontWeight:800}}>{saldo}</span><span style={S.sLbl}>Saldo</span></div>
+                      </div>
+                    </div>
+                    {tl.length===0?<p style={S.empty}>Nenhum evento.</p>:(
+                      <div style={{display:'flex',flexDirection:'column'}}>
+                        {tl.map((ev,i)=>(
+                          <div key={i} style={{display:'flex',gap:12,alignItems:'flex-start',marginBottom:2}}>
+                            <div style={{display:'flex',flexDirection:'column',alignItems:'center',width:20,paddingTop:3}}>
+                              <div style={{width:12,height:12,borderRadius:'50%',background:TC[ev.tipo],flexShrink:0}}/>
+                              {i<tl.length-1&&<div style={{width:2,flexGrow:1,background:'#E2E8F0',minHeight:24,marginTop:2}}/>}
+                            </div>
+                            <div style={{flex:1,background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:10,padding:'10px 12px',marginBottom:8}}>
+                              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                                <span style={{fontWeight:600,fontSize:13,color:TC[ev.tipo]}}>{TL[ev.tipo]}</span>
+                                {ev.dias&&<span style={{fontSize:13,fontWeight:700,color:TC[ev.tipo]}}>{ev.tipo==='remocao'||ev.tipo==='folga'?'-':'+'}{ev.dias}d</span>}
+                              </div>
+                              {ev.obs&&<div style={{fontSize:12,color:'#64748B',marginTop:3}}>{ev.obs}</div>}
+                              <div style={{fontSize:11,color:'#94A3B8',marginTop:3}}>{fmtDT(ev.data)}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {aba==='Saldo'&&(
+            <div>
+              <div style={{display:'flex',gap:10,marginBottom:16}}>
+                <button style={{...S.btnSm,flex:1}} onClick={()=>setModal('addSaldo')}>+ Adicionar saldo</button>
+                <button style={{...S.btnSm,flex:1,background:'#EF4444'}} onClick={()=>setModal('remSaldo')}>− Remover saldo</button>
+              </div>
+              <h3 style={S.secTitle}>Créditos lançados</h3>
+              <div style={S.list}>
+                {data.saldos.length===0&&<p style={S.empty}>Nenhum crédito lançado.</p>}
+                {[...data.saldos].reverse().map(s=>{
+                  const sv=data.servidores.find(v=>v.id===s.servidorId);
+                  return (
+                    <div key={s.id} style={S.item}>
+                      <div><div style={S.iTitle}>{sv?.nome||'—'}</div><div style={S.iSub}>{fmtDT(s.criadoEm)}{s.obs?` · ${s.obs}`:''}</div></div>
+                      <span style={{fontSize:15,fontWeight:700,color:'#10B981'}}>+{s.dias}d</span>
+                    </div>
+                  );
+                })}
+              </div>
+              {data.remocoes.length>0&&(
+                <>
+                  <h3 style={{...S.secTitle,marginTop:20}}>Remoções</h3>
+                  <div style={S.list}>
+                    {[...data.remocoes].reverse().map(r=>{
+                      const sv=data.servidores.find(v=>v.id===r.servidorId);
+                      return (
+                        <div key={r.id} style={S.item}>
+                          <div><div style={S.iTitle}>{sv?.nome||'—'}</div><div style={S.iSub}>{fmtDT(r.criadoEm)}{r.motivo?` · ${r.motivo}`:''}</div></div>
+                          <span style={{fontSize:15,fontWeight:700,color:'#EF4444'}}>−{r.dias}d</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {aba==='Solicitações'&&(
+            <div>
+              {data.solicitacoes.filter(s=>s.status==='pendente').length>0&&(
+                <div style={{display:'flex',gap:8,marginBottom:16}}>
+                  <button style={{...S.btnOk,flex:1}} onClick={()=>resolverSelecionados('aprovado')} disabled={!solSel.length}>✓ Aprovar {solSel.length>0?`(${solSel.length})`:''}</button>
+                  <button style={{...S.btnNo,flex:1}} onClick={()=>resolverSelecionados('negado')} disabled={!solSel.length}>✗ Negar {solSel.length>0?`(${solSel.length})`:''}</button>
+                </div>
+              )}
+              <h3 style={S.secTitle}>Todas as solicitações</h3>
+              <div style={S.list}>
+                {data.solicitacoes.length===0&&<p style={S.empty}>Nenhuma solicitação.</p>}
+                {data.solicitacoes.map(s=>{
+                  const c=SC[s.status];
+                  const sel=solSel.includes(s.id);
+                  const {saldo}=calcSaldo(data,s.servidorId);
+                  return (
+                    <div key={s.id} style={{...S.solCard,borderColor:sel?'#1E3A5F':c.border,borderWidth:sel?2:1.5}}>
+                      <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
+                        {s.status==='pendente'&&<input type="checkbox" style={{...S.checkbox,marginTop:2}} checked={sel} onChange={()=>setSolSel(v=>v.includes(s.id)?v.filter(x=>x!==s.id):[...v,s.id])}/>}
+                        <div style={{flex:1}}>
+                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                            <div style={S.iTitle}>{s.servidorNome}</div>
+                            <span style={{...S.stBadge,background:c.bg,color:c.text}}>{SL[s.status]}</span>
+                          </div>
+                          <div style={S.iSub}>{fmtDate(s.dataInicio)} → {fmtDate(s.dataFim)}{s.motivo?` · ${s.motivo}`:''}</div>
+                          <div style={{fontSize:12,color:'#10B981',fontWeight:600,marginTop:3}}>Saldo: {saldo} dia(s)</div>
+                        </div>
+                      </div>
+                      {s.status==='pendente'&&(
+                        <div style={{display:'flex',gap:8,marginTop:4,paddingLeft:28}}>
+                          <button style={S.btnOk} onClick={()=>resolverUm(s.id,'aprovado')}>✓ Aprovar</button>
+                          <button style={S.btnNo} onClick={()=>resolverUm(s.id,'negado')}>✗ Negar</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {aba==='Config'&&(
+            <SenhaForm senhaAtual={data.adminSenha} onSave={async nova=>{
+              await sb.from('config').update({admin_senha:nova}).eq('id',1);
+              await onRefresh();
+            }}/>
+          )}
+        </div>
+      </div>
+
+      {modal==='add'&&(
+        <Modal title="Novo Servidor">
+          <label style={S.label}>Matrícula</label>
+          <input style={S.input} placeholder="Ex: 005" value={novoSrv.matricula} onChange={e=>setNovoSrv(n=>({...n,matricula:e.target.value}))}/>
+          <label style={S.label}>Nome completo</label>
+          <input style={S.input} placeholder="Nome" value={novoSrv.nome} onChange={e=>setNovoSrv(n=>({...n,nome:e.target.value}))}/>
+          <label style={S.label}>Cargo / Função</label>
+          <input style={S.input} placeholder="Cargo" value={novoSrv.cargo} onChange={e=>setNovoSrv(n=>({...n,cargo:e.target.value}))}/>
+          <p style={{fontSize:12,color:'#64748B',margin:0}}>Senha inicial: <strong>123</strong></p>
+          <div style={{display:'flex',gap:10,marginTop:4}}>
+            <button style={S.btnSec} onClick={()=>setModal(null)}>Cancelar</button>
+            <button style={{...S.btnPrimary,flex:1}} onClick={addServidor}>Adicionar</button>
+          </div>
+        </Modal>
+      )}
+      {modal==='edit'&&editSrv&&(
+        <Modal title="Editar Servidor">
+          <label style={S.label}>Matrícula</label>
+          <input style={S.input} value={editSrv.matricula} onChange={e=>setEditSrv(v=>({...v,matricula:e.target.value}))}/>
+          <label style={S.label}>Nome completo</label>
+          <input style={S.input} value={editSrv.nome} onChange={e=>setEditSrv(v=>({...v,nome:e.target.value}))}/>
+          <label style={S.label}>Cargo / Função</label>
+          <input style={S.input} value={editSrv.cargo} onChange={e=>setEditSrv(v=>({...v,cargo:e.target.value}))}/>
+          <div style={{display:'flex',gap:10,marginTop:4}}>
+            <button style={S.btnSec} onClick={()=>setModal(null)}>Cancelar</button>
+            <button style={{...S.btnPrimary,flex:1}} onClick={saveEdit}>Salvar</button>
+          </div>
+        </Modal>
+      )}
+      {modal==='addIndiv'&&indivSrv&&(
+        <Modal title={`+ Saldo — ${indivSrv.nome}`}>
+          <div style={{background:'#EEF2FF',borderRadius:10,padding:'10px 14px',marginBottom:4}}>
+            <span style={{fontSize:13,color:'#4338CA',fontWeight:600}}>#{indivSrv.matricula} · {indivSrv.cargo}</span>
+          </div>
+          <label style={S.label}>Dias a creditar</label>
+          <input style={S.input} type="number" placeholder="Ex: 1" value={indivDias} onChange={e=>setIndivDias(e.target.value)}/>
+          <label style={S.label}>Observação (opcional)</label>
+          <input style={S.input} placeholder="Ex: plantão 15/06" value={indivObs} onChange={e=>setIndivObs(e.target.value)}/>
+          <div style={{display:'flex',gap:10,marginTop:4}}>
+            <button style={S.btnSec} onClick={()=>setModal(null)}>Cancelar</button>
+            <button style={{...S.btnPrimary,flex:1}} onClick={confirmarSaldoIndiv}>Confirmar</button>
+          </div>
+        </Modal>
+      )}
+      {modal==='addSaldo'&&(
+        <Modal title="Adicionar Saldo — Múltiplos">
+          <ServidorSelector servidores={data.servidores} selecionados={saldoSel} onChange={setSaldoSel} data={data}/>
+          <label style={{...S.label,marginTop:12}}>Dias a creditar</label>
+          <input style={S.input} type="number" placeholder="Ex: 1" value={saldoDias} onChange={e=>setSaldoDias(e.target.value)}/>
+          <label style={S.label}>Observação (opcional)</label>
+          <input style={S.input} placeholder="Ex: plantão 15/06" value={saldoObs} onChange={e=>setSaldoObs(e.target.value)}/>
+          {saldoSel.length>0&&saldoDias&&<p style={{fontSize:13,color:'#059669',fontWeight:600,margin:'2px 0 0'}}>+{saldoDias}d para {saldoSel.length} servidor(es)</p>}
+          <div style={{display:'flex',gap:10,marginTop:4}}>
+            <button style={S.btnSec} onClick={()=>setModal(null)}>Cancelar</button>
+            <button style={{...S.btnPrimary,flex:1}} onClick={confirmarSaldoMultiplo}>Confirmar</button>
+          </div>
+        </Modal>
+      )}
+      {modal==='remSaldo'&&(
+        <Modal title="Remover Saldo">
+          <label style={S.label}>Servidor</label>
+          <select style={S.input} value={remSrv?.id||''} onChange={e=>{const s=data.servidores.find(v=>v.id===Number(e.target.value));setRemSrv(s||null);}}>
+            <option value="">Selecione...</option>
+            {data.servidores.map(s=>{const {saldo}=calcSaldo(data,s.id);return <option key={s.id} value={s.id}>{s.nome} — saldo: {saldo}d</option>;})}
+          </select>
+          <label style={S.label}>Dias a remover</label>
+          <input style={S.input} type="number" placeholder="Ex: 1" value={remDias} onChange={e=>setRemDias(e.target.value)}/>
+          <label style={S.label}>Motivo (exibido ao servidor)</label>
+          <input style={S.input} placeholder="Ex: lançamento incorreto" value={remMotivo} onChange={e=>setRemMotivo(e.target.value)}/>
+          <div style={{display:'flex',gap:10,marginTop:4}}>
+            <button style={S.btnSec} onClick={()=>setModal(null)}>Cancelar</button>
+            <button style={{...S.btnPrimary,flex:1,background:'#EF4444'}} onClick={removerSaldo}>Remover</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ─── SERVIDOR PANEL ───────────────────────────────────────────────────────────
+function ServidorPanel({perfil,data,onRefresh,onLogout}) {
+  const [aba,setAba]=useState('Saldo');
+  const [modal,setModal]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const [sol,setSol]=useState({dataInicio:'',dataFim:'',motivo:''});
+
+  const sv=data.servidores.find(s=>s.id===perfil.id)||perfil;
+  const {gerado,usado,saldo}=calcSaldo(data,sv.id);
+  const sols=data.solicitacoes.filter(s=>s.servidorId===sv.id);
+
+  async function enviar(){
+    if(!sol.dataInicio||!sol.dataFim) return;
+    setBusy(true);
+    try{
+      await sb.from('solicitacoes').insert({servidor_id:sv.id,servidor_nome:sv.nome,data_inicio:sol.dataInicio,data_fim:sol.dataFim,motivo:sol.motivo||null,status:'pendente'});
+      await onRefresh();
+      setSol({dataInicio:'',dataFim:'',motivo:''});
+      setModal(null);
+    }catch{alert('Erro ao enviar.');}
+    finally{setBusy(false);}
+  }
+
+  return (
+    <div style={S.root}>
+      {busy&&<div style={S.busyOverlay}><div style={S.busyBox}>Salvando...</div></div>}
+      <div style={S.wrap}>
+        <div style={S.header}>
+          <div><div style={S.hTitle}>{sv.nome}</div><div style={S.hSub}>{sv.cargo} · #{sv.matricula}</div></div>
+          <button style={S.logoutBtn} onClick={onLogout}>Sair</button>
+        </div>
+        <div style={S.tabs}>
+          {['Saldo','Solicitações','Perfil'].map(a=>(
+            <button key={a} style={{...S.tab,...(aba===a?S.tabOn:{})}} onClick={()=>setAba(a)}>{a}</button>
+          ))}
+        </div>
+        <div style={S.content}>
+          {aba==='Saldo'&&(
+            <div>
+              <div style={{textAlign:'center',padding:'28px 16px 16px'}}>
+                <div style={{fontSize:64,fontWeight:800,color:'#1E3A5F',lineHeight:1}}>{saldo}</div>
+                <div style={{fontSize:15,color:'#64748B',marginTop:8}}>dias de folga disponíveis</div>
+                <div style={{fontSize:12,marginTop:8,display:'flex',justifyContent:'center',gap:16}}>
+                  <span style={{color:'#3B82F6'}}>{gerado} creditadas</span>
+                  <span style={{color:'#EF4444'}}>{usado} usadas</span>
+                </div>
+              </div>
+              <button style={{...S.btnPrimary,marginTop:20}} onClick={()=>setModal('sol')}>Solicitar Folga</button>
+            </div>
+          )}
+          {aba==='Solicitações'&&(
+            <div>
+              <div style={S.row}>
+                <h3 style={S.secTitle}>Minhas solicitações</h3>
+                <button style={S.btnSm} onClick={()=>setModal('sol')}>+ Nova</button>
+              </div>
+              <div style={S.list}>
+                {sols.length===0&&<p style={S.empty}>Nenhuma solicitação.</p>}
+                {sols.map(s=>{
+                  const c=SC[s.status];
+                  return (
+                    <div key={s.id} style={{...S.solCard,borderColor:c.border}}>
+                      <div style={S.row}>
+                        <div style={S.iTitle}>{fmtDate(s.dataInicio)} → {fmtDate(s.dataFim)}</div>
+                        <span style={{...S.stBadge,background:c.bg,color:c.text}}>{SL[s.status]}</span>
+                      </div>
+                      {s.motivo&&<div style={S.iSub}>{s.motivo}</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {aba==='Perfil'&&(
+            <div>
+              <div style={S.perfilCard}>
+                <div style={S.avatar}>{sv.nome.charAt(0)}</div>
+                <div>
+                  <div style={S.sNome}>{sv.nome}</div>
+                  <div style={S.sCargo}>{sv.cargo}</div>
+                  <div style={{fontSize:12,color:'#94A3B8',marginTop:2}}>Matrícula: #{sv.matricula}</div>
+                </div>
+              </div>
+              <SenhaForm senhaAtual={sv.senha} onSave={async nova=>{
+                await sb.from('servidores').update({senha:nova}).eq('id',sv.id);
+                await onRefresh();
+              }}/>
+            </div>
+          )}
+        </div>
+      </div>
+      {modal==='sol'&&(
+        <Modal title="Solicitar Folga">
+          <label style={S.label}>Data de início</label>
+          <input style={S.input} type="date" value={sol.dataInicio} onChange={e=>setSol(n=>({...n,dataInicio:e.target.value}))}/>
+          <label style={S.label}>Data de fim</label>
+          <input style={S.input} type="date" value={sol.dataFim} onChange={e=>setSol(n=>({...n,dataFim:e.target.value}))}/>
+          <label style={S.label}>Observação (opcional)</label>
+          <input style={S.input} placeholder="Ex: viagem..." value={sol.motivo} onChange={e=>setSol(n=>({...n,motivo:e.target.value}))}/>
+          <div style={{display:'flex',gap:10,marginTop:8}}>
+            <button style={S.btnSec} onClick={()=>setModal(null)}>Cancelar</button>
+            <button style={{...S.btnPrimary,flex:1,opacity:busy?0.6:1}} onClick={enviar} disabled={busy}>Enviar</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ─── LOGIN ────────────────────────────────────────────────────────────────────
+function LoginScreen({data,onLoginAdmin,onLoginServidor}) {
+  const [tela,setTela]=useState('home');
+  const [adminPass,setAdminPass]=useState('');
+  const [adminErr,setAdminErr]=useState(false);
+  const [srvId,setSrvId]=useState('');
+  const [srvPass,setSrvPass]=useState('');
+  const [srvErr,setSrvErr]=useState('');
+
+  function tryAdmin(){
+    if(adminPass===data.adminSenha) onLoginAdmin();
+    else setAdminErr(true);
+  }
+  function trySrv(){
+    const s=data.servidores.find(sv=>sv.id===Number(srvId));
+    if(!s) return;
+    if(srvPass!==s.senha){setSrvErr('Senha incorreta.');return;}
+    onLoginServidor(s);
+  }
+
+  return (
+    <div style={S.root}>
+      <div style={S.loginWrap}>
+        {tela==='home'&&(
+          <div style={S.loginCard}>
+            <div style={{textAlign:'center',marginBottom:8}}>
+              <span style={{fontSize:40}}>📋</span>
+              <h1 style={{margin:'8px 0 2px',fontSize:22,fontWeight:700,color:'#1E3A5F'}}>Controle de Folgas</h1>
+              <p style={{margin:0,fontSize:13,color:'#64748B'}}>Secretaria Municipal</p>
+            </div>
+            <button style={S.optBtn} onClick={()=>setTela('admin')}>
+              <span style={{fontSize:28}}>🔐</span>
+              <div><div style={{fontWeight:600,fontSize:15}}>Administração</div><div style={{fontSize:12,color:'#64748B'}}>Acesso da chefia</div></div>
+            </button>
+            <button style={S.optBtn} onClick={()=>setTela('srv')}>
+              <span style={{fontSize:28}}>👤</span>
+              <div><div style={{fontWeight:600,fontSize:15}}>Servidor</div><div style={{fontSize:12,color:'#64748B'}}>Consulta e solicitações</div></div>
+            </button>
+          </div>
+        )}
+        {tela==='admin'&&(
+          <div style={S.loginCard}>
+            <button style={S.backBtn} onClick={()=>{setTela('home');setAdminErr(false);setAdminPass('');}}>← Voltar</button>
+            <h2 style={{fontSize:18,fontWeight:700,margin:'0 0 4px',color:'#1E3A5F'}}>Acesso da Administração</h2>
+            <input style={{...S.input,...(adminErr?S.inputErr:{})}} type="password" placeholder="Senha da chefia"
+              value={adminPass} onChange={e=>{setAdminPass(e.target.value);setAdminErr(false);}}
+              onKeyDown={e=>e.key==='Enter'&&tryAdmin()}/>
+            {adminErr&&<p style={{color:'#EF4444',fontSize:12,margin:0}}>Senha incorreta</p>}
+            <button style={S.btnPrimary} onClick={tryAdmin}>Entrar</button>
+          </div>
+        )}
+        {tela==='srv'&&(
+          <div style={S.loginCard}>
+            <button style={S.backBtn} onClick={()=>{setTela('home');setSrvErr('');setSrvPass('');setSrvId('');}}>← Voltar</button>
+            <h2 style={{fontSize:18,fontWeight:700,margin:'0 0 4px',color:'#1E3A5F'}}>Acesso do Servidor</h2>
+            <label style={S.label}>Seu nome</label>
+            <select style={S.input} value={srvId} onChange={e=>{setSrvId(e.target.value);setSrvErr('');}}>
+              <option value="">Selecione seu nome</option>
+              {data.servidores.map(s=><option key={s.id} value={s.id}>{s.nome} — #{s.matricula}</option>)}
+            </select>
+            <label style={S.label}>Senha</label>
+            <input style={{...S.input,...(srvErr?S.inputErr:{})}} type="password" placeholder="Digite sua senha"
+              value={srvPass} onChange={e=>{setSrvPass(e.target.value);setSrvErr('');}}
+              onKeyDown={e=>e.key==='Enter'&&trySrv()}/>
+            {srvErr&&<p style={{color:'#EF4444',fontSize:12,margin:0}}>⚠ {srvErr}</p>}
+            <small style={{color:'#94a3b8',fontSize:12}}>Senha padrão: 123</small>
+            <button style={{...S.btnPrimary,opacity:srvId?1:0.5}} onClick={trySrv} disabled={!srvId}>Entrar</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── ROOT ─────────────────────────────────────────────────────────────────────
+function App() {
+  const [data,setData]=useState(null);
+  const [loading,setLoading]=useState(true);
+  const [view,setView]=useState('login');
+  const [perfil,setPerfil]=useState(null);
+
+  async function refresh(){
+    const d=await fetchAllData();
+    setData(d);
+  }
+
+  useEffect(()=>{refresh().then(()=>setLoading(false));},[]);
+
+  if(loading) return (
+    <div style={S.spinner}>
+      <span style={{fontSize:40}}>📋</span>
+      <div style={{fontSize:16,color:'#64748B'}}>Carregando...</div>
+    </div>
+  );
+
+  if(view==='admin') return <AdminPanel data={data} onRefresh={refresh} onLogout={()=>setView('login')}/>;
+  if(view==='srv') return <ServidorPanel perfil={perfil} data={data} onRefresh={refresh} onLogout={()=>{setPerfil(null);setView('login');}}/>;
+  return <LoginScreen data={data} onLoginAdmin={()=>setView('admin')} onLoginServidor={s=>{setPerfil(s);setView('srv');}}/>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
